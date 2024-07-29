@@ -1,6 +1,6 @@
 export CUDA_VISIBLE_DEVICES=1
 
-model_name=DLinear
+model_name= 
 
 python -u run.py \
   --task_name short_term_forecast \

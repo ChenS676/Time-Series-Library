@@ -8,13 +8,15 @@ from exp.exp_anomaly_detection import Exp_Anomaly_Detection
 from exp.exp_classification import Exp_Classification
 import random
 import numpy as np
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+import json
 
 fix_seed = 2021
 random.seed(fix_seed)
 torch.manual_seed(fix_seed)
 np.random.seed(fix_seed)
 
-parser = argparse.ArgumentParser(description='TimesNet')
+parser = argparse.ArgumentParser(description='DLinear')
 
 # basic config
 parser.add_argument('--task_name', type=str, required=True, default='long_term_forecast',
@@ -25,12 +27,12 @@ parser.add_argument('--model', type=str, required=True, default='Autoformer',
                     help='model name, options: [Autoformer, Transformer, TimesNet]')
 
 # data loader
-parser.add_argument('--data', type=str, required=True, default='ETTm1', help='dataset type')
-parser.add_argument('--root_path', type=str, default='./data/ETT/', help='root path of the data file')
-parser.add_argument('--data_path', type=str, default='ETTh1.csv', help='data file')
+parser.add_argument('--data', type=str, required=True, default='custom', help='dataset type')
+parser.add_argument('--root_path', type=str, default='/hkfs/work/workspace_haic/scratch/cc7738-Time-Series-Lib/Time-Series-Library/dataset', help='root path of the data file')
+parser.add_argument('--data_path', type=str, default='electricityo.csv', help='data file')
 parser.add_argument('--features', type=str, default='M',
                     help='forecasting task, options:[M, S, MS]; M:multivariate predict multivariate, S:univariate predict univariate, MS:multivariate predict univariate')
-parser.add_argument('--target', type=str, default='Biomass  - Actual Aggregated [MW]', help='target feature in S or MS task')
+parser.add_argument('--target', type=str, default='OT', help='target feature in S or MS task')
 parser.add_argument('--freq', type=str, default='h',
                     help='freq for time features encoding, options:[s:secondly, t:minutely, h:hourly, d:daily, b:business days, w:weekly, m:monthly], you can also use more detailed freq like 15min or 3h')
 parser.add_argument('--checkpoints', type=str, default='./checkpoints/', help='location of model checkpoints')
@@ -68,6 +70,7 @@ parser.add_argument('--embed', type=str, default='timeF',
                     help='time features encoding, options:[timeF, fixed, learned]')
 parser.add_argument('--activation', type=str, default='gelu', help='activation')
 parser.add_argument('--output_attention', action='store_true', help='whether to output attention in ecoder')
+parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs for training')
 
 # optimization
 parser.add_argument('--num_workers', type=int, default=10, help='data loader num workers')
@@ -102,6 +105,14 @@ if args.use_gpu and args.use_multi_gpu:
 
 print('Args in experiment:')
 print(args)
+
+def calculate_metrics(y_true, y_pred):
+    # Convert a 3D array to a 2D array
+    y_true = y_true.reshape(-1, y_true.shape[-1])
+    y_pred = y_pred.reshape(-1, y_pred.shape[-1])
+    mse = mean_squared_error(y_true, y_pred)
+    mae = mean_absolute_error(y_true, y_pred)
+    return mse, mae
 
 if args.task_name == 'long_term_forecast':
     Exp = Exp_Long_Term_Forecast
@@ -139,12 +150,73 @@ if args.is_training:
             args.des, ii)
 
         exp = Exp(args)  # set experiments
+
+        # Print paths for debugging
+        print(f"Root path: {args.root_path}")
+        print(f"Data path: {args.data_path}")
+
         print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
         exp.train(setting)
 
         print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
         exp.test(setting)
-        torch.cuda.empty_cache()
+
+        # Get the validation data loader
+        val_data, val_loader = exp._get_data(flag='val')
+
+        # Calculate and output MSE and MAE
+        y_true_all = []
+        y_pred_all = []
+        exp.model.eval()
+        with torch.no_grad():
+            for batch in val_loader:
+                batch_x, batch_y, batch_x_mark, batch_y_mark = batch
+                batch_x = batch_x.float().to(exp.device)
+                batch_y = batch_y.float().to(exp.device)
+                batch_x_mark = batch_x_mark.float().to(exp.device)
+                batch_y_mark = batch_y_mark.float().to(exp.device)
+
+                # decoder input
+                dec_inp = torch.zeros_like(batch_y[:, -exp.args.pred_len:, :]).float()
+                dec_inp = torch.cat([batch_y[:, :exp.args.label_len, :], dec_inp], dim=1).float().to(exp.device)
+
+                # encoder - decoder
+                if exp.args.use_amp:
+                    with torch.cuda.amp.autocast():
+                        if exp.args.output_attention:
+                            outputs = exp.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                        else:
+                            outputs = exp.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                else:
+                    if exp.args.output_attention:
+                        outputs = exp.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                    else:
+                        outputs = exp.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+
+                f_dim = -1 if exp.args.features == 'MS' else 0
+                outputs = outputs[:, -exp.args.pred_len:, f_dim:]
+                batch_y = batch_y[:, -exp.args.pred_len:, f_dim:]
+
+                y_true_all.append(batch_y.detach().cpu().numpy())
+                y_pred_all.append(outputs.detach().cpu().numpy())
+
+        y_true_all = np.concatenate(y_true_all, axis=0)
+        y_pred_all = np.concatenate(y_pred_all, axis=0)
+        mse, mae = calculate_metrics(y_true_all, y_pred_all)
+        print(f'Epoch {ii+1}, MSE: {mse:.4f}, MAE: {mae:.4f}')
+
+        # save results
+        results = {
+            'model': args.model,
+            'dataset': args.data,
+            'mse': float(mse),  # float
+            'mae': float(mae)   # float
+        }
+
+        with open('results.json', 'a') as f:
+            json.dump(results, f)
+            f.write('\n')
+
 else:
     ii = 0
     setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
@@ -167,6 +239,68 @@ else:
         args.des, ii)
 
     exp = Exp(args)  # set experiments
+
+    # Print paths for debugging
+    print(f"Root path: {args.root_path}")
+    print(f"Data path: {args.data_path}")
+
     print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
     exp.test(setting, test=1)
     torch.cuda.empty_cache()
+
+    # Get the validation data loader
+    val_data, val_loader = exp._get_data(flag='val')
+
+    # calculate and export MSE and MAE
+    y_true_all = []
+    y_pred_all = []
+    exp.model.eval()
+    with torch.no_grad():
+        for batch in val_loader:
+            batch_x, batch_y, batch_x_mark, batch_y_mark = batch
+            batch_x = batch_x.float().to(exp.device)
+            batch_y = batch_y.float().to(exp.device)
+            batch_x_mark = batch_x_mark.float().to(exp.device)
+            batch_y_mark = batch_y_mark.float().to(exp.device)
+
+            # decoder input
+            dec_inp = torch.zeros_like(batch_y[:, -exp.args.pred_len:, :]).float()
+            dec_inp = torch.cat([batch_y[:, :exp.args.label_len, :], dec_inp], dim=1).float().to(exp.device)
+
+            # encoder - decoder
+            if exp.args.use_amp:
+                with torch.cuda.amp.autocast():
+                    if exp.args.output_attention:
+                        outputs = exp.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                    else:
+                        outputs = exp.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+            else:
+                if exp.args.output_attention:
+                    outputs = exp.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                else:
+                    outputs = exp.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+
+            f_dim = -1 if exp.args.features == 'MS' else 0
+            outputs = outputs[:, -exp.args.pred_len:, f_dim:]
+            batch_y = batch_y[:, -exp.args.pred_len:, f_dim:]
+
+            y_true_all.append(batch_y.detach().cpu().numpy())
+            y_pred_all.append(outputs.detach().cpu().numpy())
+
+    y_true_all = np.concatenate(y_true_all, axis=0)
+    y_pred_all = np.concatenate(y_pred_all, axis=0)
+    mse, mae = calculate_metrics(y_true_all, y_pred_all)
+    print(f'MSE: {mse:.4f}, MAE: {mae:.4f}')
+
+    # save results
+    results = {
+        'model': args.model,
+        'dataset': args.data,
+        'mse': float(mse),  # float 
+        'mae': float(mae)   # float
+    }
+
+    with open('results.json', 'a') as f:
+        json.dump(results, f)
+        f.write('\n')
+

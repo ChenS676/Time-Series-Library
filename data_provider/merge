@@ -1,0 +1,22 @@
+import pandas as pd
+
+# 加载CSV文件
+day_ahead_prices = pd.read_csv('/hkfs/work/workspace_haic/scratch/cc7738-Time-Series-Lib/Time-Series-Library/dataset/Day-ahead Prices_202301010000-202401010000.csv')
+actual_generation = pd.read_csv('/hkfs/work/workspace_haic/scratch/cc7738-Time-Series-Lib/Time-Series-Library/dataset/Actual Generation per Production Type_202301010000-202401010000.csv')
+
+# 重命名日期列以便合并
+day_ahead_prices.rename(columns={'MTU (CET/CEST)': 'Date'}, inplace=True)
+actual_generation.rename(columns={'MTU': 'Date'}, inplace=True)
+
+# 删除时间信息以进行正确合并
+day_ahead_prices['Date'] = day_ahead_prices['Date'].str.replace(r" \(CET/CEST\)", "", regex=True)
+actual_generation['Date'] = actual_generation['Date'].str.replace(r" \(CET/CEST\)", "", regex=True)
+
+# 合并数据
+merged_data = pd.merge(day_ahead_prices, actual_generation, on='Date', how='inner')
+
+# 显示合并后的数据
+print(merged_data.head())
+
+# 保存合并后的数据到新CSV文件
+merged_data.to_csv('/mnt/data/Merged_Data.csv', index=False)

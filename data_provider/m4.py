@@ -17,14 +17,11 @@ M4 Dataset
 """
 import logging
 import os
-from collections import OrderedDict
 from dataclasses import dataclass
 from glob import glob
 
 import numpy as np
 import pandas as pd
-import patoolib
-from tqdm import tqdm
 import logging
 import os
 import pathlib
@@ -79,7 +76,7 @@ class M4Dataset:
     values: np.ndarray
 
     @staticmethod
-    def load(training: bool = True, dataset_file:str='../dataset/m4') -> 'M4Dataset':
+    def load(training: bool = True, dataset_file: str = '/hkfs/work/workspace_haic/scratch/cc7738-Time-Series-Lib/Time-Series-Library/dataset/m4') -> 'M4Dataset':
         """
         Load cached dataset.
 
@@ -88,6 +85,8 @@ class M4Dataset:
         info_file = os.path.join(dataset_file, 'M4-info.csv')
         train_cache_file = os.path.join(dataset_file, 'training.npz')
         test_cache_file = os.path.join(dataset_file, 'test.npz')
+        if not os.path.exists(info_file):
+            raise FileNotFoundError(f"文件 {info_file} 不存在。请检查路径并重试。")
         m4_info = pd.read_csv(info_file)
         return M4Dataset(ids=m4_info.M4id.values,
                          groups=m4_info.SP.values,
@@ -135,4 +134,7 @@ def load_m4_info() -> pd.DataFrame:
 
     :return: Pandas DataFrame of M4Info.
     """
+    INFO_FILE_PATH = '/hkfs/work/workspace_haic/scratch/cc7738-Time-Series-Lib/Time-Series-Library/dataset/m4/M4-info.csv'
+    if not os.path.exists(INFO_FILE_PATH):
+        raise FileNotFoundError(f"文件 {INFO_FILE_PATH} 不存在。请检查路径并重试。")
     return pd.read_csv(INFO_FILE_PATH)

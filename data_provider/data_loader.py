@@ -12,6 +12,7 @@ from data_provider.uea import subsample, interpolate_missing, Normalizer
 from sktime.utils import load_data
 import warnings
 
+
 warnings.filterwarnings('ignore')
 
 
@@ -83,7 +84,7 @@ class Dataset_ETT_hour(Dataset):
         self.data_y = data[border1:border2]
         self.data_stamp = data_stamp
 
-    def __getitem__(self, index):
+    def __getitem__(self, index):#######vor-
         s_begin = index
         s_end = s_begin + self.seq_len
         r_begin = s_end - self.label_len
@@ -191,7 +192,6 @@ class Dataset_ETT_minute(Dataset):
 
     def inverse_transform(self, data):
         return self.scaler.inverse_transform(data)
-
 
 class Dataset_Custom(Dataset):
     def __init__(self, root_path, flag='train', size=None,
